@@ -1,205 +1,205 @@
-# Cloud-Native Kubernetes Cluster Infrastructure
+# 클라우드 네이티브 Kubernetes 클러스터 인프라
 
-A comprehensive Infrastructure as Code (IaC) project implementing a production-grade Kubernetes cluster on CloudStack with automated CI/CD pipeline integration.
+CloudStack에 프로덕션급 Kubernetes 클러스터를 구현하고 자동화된 CI/CD 파이프라인을 통합한 포괄적인 Infrastructure as Code (IaC) 프로젝트입니다.
 
-**Author:** Lee Jong Ha (이종하) | **Project:** Infrastructure Design & Implementation
+**작성자:** 이종하 | **프로젝트:** 인프라 설계 및 구현
 
 ---
 
-## 📋 Project Overview
+## 📋 프로젝트 개요
 
-This project demonstrates end-to-end cloud infrastructure design and deployment, featuring:
+이 프로젝트는 엔드-투-엔드 클라우드 인프라 설계 및 배포를 다음과 같은 특징으로 시연합니다:
 
-- **Infrastructure as Code (IaC)** using Terraform to provision compute resources on CloudStack
-- **Configuration Management** using Ansible to orchestrate multi-node Kubernetes cluster setup
-- **Container Orchestration** with Kubernetes (v1.30) running on Ubuntu 24.04
-- **DevOps Pipeline** with GitLab, Jenkins, and private Docker Registry
-- **Load Balancing** using MetalLB for exposing services outside the cluster
+- **Infrastructure as Code (IaC)**: Terraform을 사용하여 CloudStack의 컴퓨팅 리소스 프로비저닝
+- **구성 관리**: Ansible을 사용하여 다중 노드 Kubernetes 클러스터 설정 조율
+- **컨테이너 오케스트레이션**: Ubuntu 24.04에서 실행되는 Kubernetes (v1.30)
+- **DevOps 파이프라인**: GitLab, Jenkins 및 비공개 Docker Registry
+- **로드 밸런싱**: MetalLB를 사용하여 클러스터 외부에 서비스 노출
 
-### Architecture Highlights
+### 아키텍처 하이라이트
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                      CloudStack (DKU)                       │
 │  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐   │
-│  │   Master     │    │    GitLab    │    │   Worker     │   │
-│  │  (2 Core)    │    │  (4 Core)    │    │  (1 Core)    │   │
+│  │   마스터     │    │    GitLab    │    │   워커       │   │
+│  │  (2 코어)    │    │  (4 코어)    │    │  (1 코어)    │   │
 │  │ k8s-master   │    │ k8s-gitlab   │    │ k8s-worker   │   │
 │  └──────────────┘    └──────────────┘    └──────────────┘   │
-│      Network: 192.168.50.0/24                               │
-│      CNI: Calico, Load Balancer: MetalLB                    │
+│      네트워크: 192.168.50.0/24                               │
+│      CNI: Calico, 로드 밸런서: MetalLB                      │
 └─────────────────────────────────────────────────────────────┘
 │
-└─ Public IP with Port Forwarding
-   ├─ SSH Master:   22    → Master:22
+└─ 공개 IP 및 포트 포워딩
+   ├─ SSH 마스터:   22    → Master:22
    ├─ SSH GitLab:   2201  → GitLab:22
-   ├─ SSH Worker:   2202  → Worker:22
+   ├─ SSH 워커:     2202  → Worker:22
    ├─ Jenkins UI:   30880 (NodePort)
    ├─ GitLab UI:    30080 (NodePort)
-   ├─ Registry:     30500 (Private Docker Registry)
-   └─ TestApp:      30001 (Test Application)
+   ├─ Registry:     30500 (비공개 Docker Registry)
+   └─ TestApp:      30001 (테스트 애플리케이션)
 ```
 
 ---
 
-## 🏗️ Infrastructure Components
+## 🏗️ 인프라 컴포넌트
 
-### 1. **Terraform Configuration** (`terraform/`)
+### 1. **Terraform 구성** (`terraform/`)
 
-Automated infrastructure provisioning on CloudStack:
+CloudStack에서 자동화된 인프라 프로비저닝:
 
-| Resource | Configuration | Purpose |
+| 리소스 | 구성 | 목적 |
 |----------|---------------|---------|
-| **Network** | 192.168.50.0/24 | Isolated network for cluster |
-| **Instances** | 3 VMs | Master (2 core), GitLab (4 core), Worker (1 core) |
-| **Public IP** | 1 Elastic IP | External access point |
-| **Port Forwarding** | TCP Rules | SSH & Service Access |
-| **Firewall Rules** | Egress Allow All | Cluster external connectivity |
+| **네트워크** | 192.168.50.0/24 | 클러스터용 격리 네트워크 |
+| **인스턴스** | 3개 VM | 마스터 (2코어), GitLab (4코어), 워커 (1코어) |
+| **공개 IP** | 1개 탄력형 IP | 외부 접근 지점 |
+| **포트 포워딩** | TCP 규칙 | SSH 및 서비스 접근 |
+| **방화벽 규칙** | 송신 모두 허용 | 클러스터 외부 연결성 |
 
-**Key Features:**
-- Parameterized configuration (CPU offerings, templates)
-- Dependency management with wait conditions
-- Public IP provisioning with automatic port forwarding
-- Cloud-init user data for initial VM setup
+**주요 기능:**
+- 매개변수화된 구성 (CPU 제공, 템플릿)
+- 대기 조건을 사용한 의존성 관리
+- 공개 IP 프로비저닝 및 자동 포트 포워딩
+- 초기 VM 설정을 위한 Cloud-init 사용자 데이터
 
-### 2. **Ansible Automation** (`ansible/`)
+### 2. **Ansible 자동화** (`ansible/`)
 
-Multi-stage cluster initialization and application deployment:
+다단계 클러스터 초기화 및 애플리케이션 배포:
 
-#### **Stage 1: k8s_master**
-- DNS/hostname configuration (8.8.8.8, 1.1.1.1)
-- APT repository setup (Ubuntu 24.04 Noble)
-- Container runtime: `containerd` with SystemdCgroup
-- Kubernetes v1.30 installation via official repos
-- Pod network CIDR: 192.168.0.0/16
-- `kubeadm init` with automatic join command generation
-- kubeconfig setup for ubuntu user
+#### **단계 1: k8s_master**
+- DNS/호스트명 구성 (8.8.8.8, 1.1.1.1)
+- APT 저장소 설정 (Ubuntu 24.04 Noble)
+- 컨테이너 런타임: `containerd` with SystemdCgroup
+- 공식 저장소를 통한 Kubernetes v1.30 설치
+- 포드 네트워크 CIDR: 192.168.0.0/16
+- 자동 조인 명령 생성을 통한 `kubeadm init`
+- ubuntu 사용자용 kubeconfig 설정
 
-#### **Stage 2: k8s_cni**
-- Calico CNI deployment (v3.27.3)
-- Network policy enforcement
-- Pod-to-pod communication routing
+#### **단계 2: k8s_cni**
+- Calico CNI 배포 (v3.27.3)
+- 네트워크 정책 적용
+- 포드 간 통신 라우팅
 
-#### **Stage 3: k8s_worker**
-- Identical container runtime & K8s tools installation
-- Registry mirror configuration (Docker.io, Quay.io, GCR, K8s)
-- Worker node joins cluster automatically
+#### **단계 3: k8s_worker**
+- 동일한 컨테이너 런타임 및 K8s 도구 설치
+- 레지스트리 미러 구성 (Docker.io, Quay.io, GCR, K8s)
+- 워커 노드가 자동으로 클러스터 조인
 
-#### **Stage 4: k8s_metallb**
-- MetalLB load balancer for service exposure
-- Layer 2 mode configuration
-- IP pool for NodePort services
+#### **단계 4: k8s_metallb**
+- 서비스 노출을 위한 MetalLB 로드 밸런서
+- Layer 2 모드 구성
+- NodePort 서비스용 IP 풀
 
-#### **Stage 5: k8s_apps**
-- **Local Path Provisioner**: Persistent volume support
-- **GitLab Deployment**: Version control & artifact storage
-- **Jenkins Deployment**: CI/CD pipeline orchestration
-- **Docker Registry**: Private container image registry
+#### **단계 5: k8s_apps**
+- **Local Path Provisioner**: 영구 볼륨 지원
+- **GitLab 배포**: 버전 제어 및 아티팩트 저장소
+- **Jenkins 배포**: CI/CD 파이프라인 오케스트레이션
+- **Docker Registry**: 비공개 컨테이너 이미지 레지스트리
 
-**Orchestration Flow:**
+**오케스트레이션 흐름:**
 ```
-Master Ready → CNI Enabled → Workers Join → MetalLB Ready → Apps Deploy
+마스터 준비 → CNI 활성화 → 워커 조인 → MetalLB 준비 → 앱 배포
 ```
 
 ---
 
-## 🐳 Container & Kubernetes Components
+## 🐳 컨테이너 및 Kubernetes 컴포넌트
 
 ### **Docker Registry** (`manifests/registry/`)
-- **Image**: Official Docker Registry
-- **Storage**: PersistentVolumeClaim (50Gi)
-- **Port**: 30500 (NodePort)
-- **Access**: `192.168.50.131:30500/testapp:latest`
+- **이미지**: 공식 Docker Registry
+- **스토리지**: PersistentVolumeClaim (50Gi)
+- **포트**: 30500 (NodePort)
+- **접근**: `192.168.50.131:30500/testapp:latest`
 
 ### **GitLab** (`manifests/gitlab/`)
-- **Image**: `gitlab/gitlab-ce:latest`
-- **Storage**: PersistentVolumeClaim (100Gi)
-- **Credentials**: 
-  - Root Password: `SuperStrongPass!2025`
-  - Root Email: `root@example.com`
-- **Ports**: 30080 (HTTP), 22 (SSH)
-- **Repository**: Hosts test application source code
+- **이미지**: `gitlab/gitlab-ce:latest`
+- **스토리지**: PersistentVolumeClaim (100Gi)
+- **인증정보**: 
+  - 루트 비밀번호: `SuperStrongPass!2025`
+  - 루트 이메일: `root@example.com`
+- **포트**: 30080 (HTTP), 22 (SSH)
+- **저장소**: 테스트 애플리케이션 소스 코드 호스팅
 
 ### **Jenkins** (`manifests/jenkins/`)
-- **Image**: `jenkins/jenkins:lts`
-- **Storage**: PersistentVolumeClaim (50Gi)
-- **Port**: 30880 (HTTP)
-- **Executor**: Kubernetes plugin with Kaniko builder
-- **Pipeline**: Automated build, test, and deploy
+- **이미지**: `jenkins/jenkins:lts`
+- **스토리지**: PersistentVolumeClaim (50Gi)
+- **포트**: 30880 (HTTP)
+- **실행자**: Kaniko 빌더를 사용한 Kubernetes 플러그인
+- **파이프라인**: 자동화된 빌드, 테스트 및 배포
 
-### **Test Application** (`testapp/`)
+### **테스트 애플리케이션** (`testapp/`)
 
-**Flask Application:**
+**Flask 애플리케이션:**
 ```python
-# Simple web app returning pod hostname
-- Route: GET /
-- Response: "Hello! My name is LEE JONG HA!! {pod_hostname}"
-- Port: 8080
+# 포드 호스트명을 반환하는 간단한 웹 앱
+- 경로: GET /
+- 응답: "Hello! My name is LEE JONG HA!! {pod_hostname}"
+- 포트: 8080
 ```
 
-**Docker Image:**
-- Base: `python:3.10-slim`
-- Dependency: Flask
-- Registry: Private registry at `192.168.50.131:30500`
+**Docker 이미지:**
+- 기본 이미지: `python:3.10-slim`
+- 의존성: Flask
+- 레지스트리: `192.168.50.131:30500`의 비공개 레지스트리
 
-**Kubernetes Deployment:**
-- Replicas: 1
-- Service Type: NodePort (30001)
-- Image Pull Policy: Always
-- Registry: Private registry with credentials
+**Kubernetes 배포:**
+- 복제본: 1개
+- 서비스 유형: NodePort (30001)
+- 이미지 풀 정책: Always
+- 레지스트리: 인증정보가 있는 비공개 레지스트리
 
 ---
 
-## 🔄 CI/CD Pipeline
+## 🔄 CI/CD 파이프라인
 
-### **Jenkins Pipeline** (`testapp/Jenkinsfile`)
+### **Jenkins 파이프라인** (`testapp/Jenkinsfile`)
 
 ```groovy
-Pipeline Stages:
-  1. Clone         → Fetch from GitLab (http://192.168.50.131:30080)
-  2. Build Image   → Kaniko executor (multi-platform builds)
-  3. Push Registry → Private registry (30500)
-  4. Deploy K8s    → Apply manifests to cluster
+파이프라인 단계:
+  1. Clone         → GitLab에서 가져오기 (http://192.168.50.131:30080)
+  2. Build Image   → Kaniko 실행자 (멀티플랫폼 빌드)
+  3. Push Registry → 비공개 레지스트리 (30500)
+  4. Deploy K8s    → 클러스터에 매니페스트 적용
 ```
 
-**Features:**
-- Containerized Kaniko builder (no Docker daemon required)
-- Insecure registry support
-- Automated deployment to Kubernetes
-- TLS verification skip for internal registry
+**기능:**
+- 컨테이너화된 Kaniko 빌더 (Docker 데몬 불필요)
+- 안전하지 않은 레지스트리 지원
+- Kubernetes에 자동 배포
+- 내부 레지스트리용 TLS 검증 건너뛰기
 
 ---
 
-## 📊 Network Architecture
+## 📊 네트워크 아키텍처
 
-### **Port Mapping**
+### **포트 매핑**
 
-| Service | Internal Port | External Port | Protocol | Node |
-|---------|--------------|---------------|----------|------|
-| SSH Master | 22 | 22 | TCP | Master |
+| 서비스 | 내부 포트 | 외부 포트 | 프로토콜 | 노드 |
+|--------|--------------|---------------|----------|------|
+| SSH 마스터 | 22 | 22 | TCP | Master |
 | SSH GitLab | 22 | 2201 | TCP | GitLab |
-| SSH Worker | 22 | 2202 | TCP | Worker |
+| SSH 워커 | 22 | 2202 | TCP | Worker |
 | Jenkins UI | 8080 | 30880 | TCP | Cluster |
 | GitLab UI | 80 | 30080 | TCP | Cluster |
 | Registry | 5000 | 30500 | TCP | Cluster |
 | TestApp | 8080 | 30001 | TCP | Cluster |
 
-### **DNS & Resolution**
-- Internal: Cluster DNS (CoreDNS)
-- External: Google DNS (8.8.8.8), Cloudflare (1.1.1.1)
-- Hostname resolution via `/etc/hosts`
+### **DNS 및 해석**
+- 내부: 클러스터 DNS (CoreDNS)
+- 외부: Google DNS (8.8.8.8), Cloudflare (1.1.1.1)
+- `/etc/hosts`를 통한 호스트명 해석
 
 ---
 
-## 🚀 Deployment Instructions
+## 🚀 배포 지침
 
-### **Prerequisites**
+### **필수 요구사항**
 - Terraform CLI (>= 1.0)
 - Ansible (>= 2.9)
-- CloudStack credentials (API key, Secret key)
-- SSH key for remote access
+- CloudStack 인증정보 (API 키, 비밀키)
+- 원격 접근용 SSH 키
 
-### **Step 1: Infrastructure Provisioning**
+### **단계 1: 인프라 프로비저닝**
 
 ```bash
 cd terraform/
@@ -208,7 +208,7 @@ terraform plan
 terraform apply
 ```
 
-**Outputs:**
+**출력:**
 ```
 public_ip  = "x.x.x.x"
 master_ip  = "192.168.50.xxx"
@@ -218,32 +218,32 @@ jenkins_url = "http://x.x.x.x:30880"
 gitlab_url  = "http://x.x.x.x:30080"
 ```
 
-### **Step 2: Update Ansible Inventory**
+### **단계 2: Ansible 인벤토리 업데이트**
 
 ```bash
 cd ../ansible/
-# Edit inventory/hosts.ini.tmpl with Terraform outputs
+# inventory/hosts.ini.tmpl을 Terraform 출력으로 편집
 mv inventory/hosts.ini.tmpl inventory/hosts.ini
-# Replace ${public_ip} with actual public IP
+# ${public_ip}을 실제 공개 IP로 교체
 ```
 
-### **Step 3: Cluster Configuration**
+### **단계 3: 클러스터 구성**
 
 ```bash
-# Test connectivity
+# 연결 테스트
 ansible -i inventory/hosts.ini all -m ping
 
-# Run full playbook
+# 전체 플레이북 실행
 ansible-playbook -i inventory/hosts.ini site.yml -v
 ```
 
-### **Step 4: Verify Cluster**
+### **단계 4: 클러스터 검증**
 
 ```bash
-# SSH to master
+# 마스터에 SSH 접속
 ssh -i ~/.ssh/your-key ubuntu@${PUBLIC_IP}
 
-# Check cluster status
+# 클러스터 상태 확인
 kubectl get nodes -o wide
 kubectl get pods --all-namespaces
 kubectl get services --all-namespaces
@@ -251,130 +251,130 @@ kubectl get services --all-namespaces
 
 ---
 
-## 📈 Key Technologies & Skills Demonstrated
+## 📈 주요 기술 및 시연 기술
 
-### **Infrastructure & IaC**
-- ✅ Terraform: Multi-resource orchestration, state management
-- ✅ CloudStack: Public cloud provisioning, networking
-- ✅ Networking: Port forwarding, firewall rules, isolated networks
+### **인프라 및 IaC**
+- ✅ Terraform: 다중 리소스 오케스트레이션, 상태 관리
+- ✅ CloudStack: 공용 클라우드 프로비저닝, 네트워킹
+- ✅ 네트워킹: 포트 포워딩, 방화벽 규칙, 격리 네트워크
 
-### **Configuration Management**
-- ✅ Ansible: Multi-stage playbooks, roles, handlers
-- ✅ System Administration: DNS, APT repositories, Linux networking
-- ✅ Container Runtime: Containerd configuration, registry mirrors
+### **구성 관리**
+- ✅ Ansible: 다단계 플레이북, 역할, 핸들러
+- ✅ 시스템 관리: DNS, APT 저장소, Linux 네트워킹
+- ✅ 컨테이너 런타임: Containerd 구성, 레지스트리 미러
 
-### **Kubernetes & Orchestration**
-- ✅ kubeadm: Cluster bootstrap and node joining
-- ✅ CNI: Calico network policy implementation
-- ✅ Load Balancing: MetalLB service exposure
-- ✅ Storage: Persistent volumes & local path provisioning
-- ✅ Manifests: Deployments, Services, PersistentVolumeClaims
+### **Kubernetes 및 오케스트레이션**
+- ✅ kubeadm: 클러스터 부트스트랩 및 노드 조인
+- ✅ CNI: Calico 네트워크 정책 구현
+- ✅ 로드 밸런싱: MetalLB 서비스 노출
+- ✅ 스토리지: 영구 볼륨 및 로컬 경로 프로비저닝
+- ✅ 매니페스트: 배포, 서비스, PersistentVolumeClaim
 
-### **DevOps & CI/CD**
-- ✅ Jenkins: Pipeline-as-code, Kubernetes pod execution
-- ✅ GitLab: Repository hosting, artifact storage
-- ✅ Docker: Image building (Kaniko), registry management
-- ✅ Container Security: Private registry, insecure mode handling
+### **DevOps 및 CI/CD**
+- ✅ Jenkins: 파이프라인-코드, Kubernetes 포드 실행
+- ✅ GitLab: 저장소 호스팅, 아티팩트 저장소
+- ✅ Docker: 이미지 빌드 (Kaniko), 레지스트리 관리
+- ✅ 컨테이너 보안: 비공개 레지스트리, 안전하지 않은 모드 처리
 
-### **Python & Application Development**
-- ✅ Flask: Lightweight web framework
-- ✅ Docker: Containerization with slim base images
-- ✅ Deployment: Kubernetes-native application deployment
-
----
-
-## 🔐 Security Considerations
-
-### **Implemented**
-- ✅ Isolated network (192.168.50.0/24) for cluster
-- ✅ Port forwarding: SSH exposed selectively
-- ✅ Private Docker registry: No public access
-- ✅ SystemdCgroup: Enhanced container resource isolation
-
-### **Recommendations for Production**
-- [ ] Enable TLS for service communication
-- [ ] Implement RBAC (Role-Based Access Control)
-- [ ] Use managed secrets (Sealed Secrets, Vault)
-- [ ] Enable Network Policies (Calico)
-- [ ] Implement Pod Security Policies
-- [ ] Use private SSH keys (avoid password auth)
-- [ ] Enable logging & monitoring (Prometheus, ELK)
+### **Python 및 애플리케이션 개발**
+- ✅ Flask: 경량 웹 프레임워크
+- ✅ Docker: 슬림 기본 이미지로 컨테이너화
+- ✅ 배포: Kubernetes 네이티브 애플리케이션 배포
 
 ---
 
-## 📁 Project Structure
+## 🔐 보안 고려사항
+
+### **구현됨**
+- ✅ 클러스터용 격리 네트워크 (192.168.50.0/24)
+- ✅ 포트 포워딩: SSH 선택적으로 노출
+- ✅ 비공개 Docker 레지스트리: 공개 접근 불가
+- ✅ SystemdCgroup: 향상된 컨테이너 리소스 격리
+
+### **프로덕션용 권장사항**
+- [ ] 서비스 통신용 TLS 활성화
+- [ ] RBAC (Role-Based Access Control) 구현
+- [ ] 관리형 비밀 사용 (Sealed Secrets, Vault)
+- [ ] 네트워크 정책 활성화 (Calico)
+- [ ] Pod 보안 정책 구현
+- [ ] 비공개 SSH 키 사용 (비밀번호 인증 회피)
+- [ ] 로깅 및 모니터링 활성화 (Prometheus, ELK)
+
+---
+
+## 📁 프로젝트 구조
 
 ```
 .
-├── terraform/              # Infrastructure provisioning
-│   ├── main.tf            # Resource definitions
-│   ├── variables.tf       # Parameterized inputs
-│   ├── outputs.tf         # Export resource info
-│   └── provider.tf        # CloudStack provider config
+├── terraform/              # 인프라 프로비저닝
+│   ├── main.tf            # 리소스 정의
+│   ├── variables.tf       # 매개변수화된 입력
+│   ├── outputs.tf         # 리소스 정보 내보내기
+│   └── provider.tf        # CloudStack 공급자 구성
 │
-├── ansible/               # Cluster configuration
-│   ├── playbook.yaml      # Main playbook entry
-│   ├── site.yml           # Full cluster playbook
-│   ├── ansible.cfg        # Ansible configuration
-│   ├── inventory/         # Host inventory
-│   │   ├── hosts.ini      # Host definitions
-│   │   └── hosts.ini.tmpl # Template with variables
+├── ansible/               # 클러스터 구성
+│   ├── playbook.yaml      # 주 플레이북 엔트리
+│   ├── site.yml           # 전체 클러스터 플레이북
+│   ├── ansible.cfg        # Ansible 구성
+│   ├── inventory/         # 호스트 인벤토리
+│   │   ├── hosts.ini      # 호스트 정의
+│   │   └── hosts.ini.tmpl # 변수가 있는 템플릿
 │   └── roles/
-│       ├── k8s_master/    # Master node setup
-│       ├── k8s_cni/       # CNI deployment
-│       ├── k8s_worker/    # Worker node setup
-│       └── k8s_metallb/   # Load balancer
+│       ├── k8s_master/    # 마스터 노드 설정
+│       ├── k8s_cni/       # CNI 배포
+│       ├── k8s_worker/    # 워커 노드 설정
+│       └── k8s_metallb/   # 로드 밸런서
 │
-├── manifests/             # Kubernetes manifests
-│   ├── gitlab/           # GitLab deployment
-│   ├── jenkins/          # Jenkins deployment
-│   └── registry/         # Docker registry
+├── manifests/             # Kubernetes 매니페스트
+│   ├── gitlab/           # GitLab 배포
+│   ├── jenkins/          # Jenkins 배포
+│   └── registry/         # Docker 레지스트리
 │
-├── testapp/              # Sample application
+├── testapp/              # 샘플 애플리케이션
 │   ├── src/
-│   │   └── app.py       # Flask application
-│   ├── Dockerfile       # Container image
-│   ├── Jenkinsfile      # CI/CD pipeline
+│   │   └── app.py       # Flask 애플리케이션
+│   ├── Dockerfile       # 컨테이너 이미지
+│   ├── Jenkinsfile      # CI/CD 파이프라인
 │   └── k8s/
 │       ├── deployment.yaml
 │       └── service.yaml
 │
-└── README.md            # This file
+└── README.md            # 이 파일
 ```
 
 ---
 
-## 🎯 Learning Outcomes & Achievements
+## 🎯 학습 성과 및 성취
 
-This project demonstrates:
+이 프로젝트는 다음을 시연합니다:
 
-1. **End-to-End Infrastructure Design**: From VM provisioning to application deployment
-2. **Infrastructure as Code**: Reproducible, version-controlled infrastructure
-3. **Automation & Orchestration**: Reducing manual effort and human error
-4. **Cloud-Native Architecture**: Kubernetes-first design with scalability
-5. **DevOps Best Practices**: CI/CD integration, containerization, infrastructure automation
-6. **Troubleshooting Skills**: Network debugging, Kubernetes pod management, Ansible plays
-
----
-
-## 📝 License & Attribution
-
-This project is created as part of academic coursework in Infrastructure Design & Implementation.
-
-**Contact:** Lee Jong Ha (이종하)
+1. **엔드-투-엔드 인프라 설계**: VM 프로비저닝에서 애플리케이션 배포까지
+2. **Infrastructure as Code**: 재현 가능하고 버전 관리되는 인프라
+3. **자동화 및 오케스트레이션**: 수동 작업 및 인적 오류 감소
+4. **클라우드 네이티브 아키텍처**: Kubernetes 우선 설계 및 확장성
+5. **DevOps 베스트 프랙티스**: CI/CD 통합, 컨테이너화, 인프라 자동화
+6. **문제 해결 기술**: 네트워크 디버깅, Kubernetes 포드 관리, Ansible 플레이
 
 ---
 
-## 🤝 Contributing & Support
+## 📝 라이선스 및 저작권
 
-For questions or improvements to this infrastructure:
+이 프로젝트는 인프라 설계 및 구현 학과의 학술 과정의 일부로 작성되었습니다.
 
-1. Review the Kubernetes documentation: https://kubernetes.io/docs/
-2. Check Ansible best practices: https://docs.ansible.com/
-3. Refer to Terraform CloudStack provider: https://registry.terraform.io/providers/cloudstack/cloudstack/latest
-4. GitLab documentation: https://docs.gitlab.com/
-5. Jenkins documentation: https://www.jenkins.io/doc/
+**연락처:** 이종하
 
 ---
 
-**Last Updated:** 2025-12-10 | **Version:** 1.0
+## 🤝 기여 및 지원
+
+이 인프라에 대한 질문이나 개선사항:
+
+1. Kubernetes 문서 검토: https://kubernetes.io/docs/
+2. Ansible 베스트 프랙티스 확인: https://docs.ansible.com/
+3. Terraform CloudStack 공급자 참조: https://registry.terraform.io/providers/cloudstack/cloudstack/latest
+4. GitLab 문서: https://docs.gitlab.com/
+5. Jenkins 문서: https://www.jenkins.io/doc/
+
+---
+
+**마지막 업데이트:** 2025-12-10 | **버전:** 1.0
