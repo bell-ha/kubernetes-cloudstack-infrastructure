@@ -1,0 +1,119 @@
+---
+# -----------------------------------------
+# 1. Fix APT mirror
+# -----------------------------------------
+- name: Remove local Ubuntu mirror
+  file:
+    path: /etc/apt/sources.list.d/ubuntu.sources
+    state: absent
+
+- name: Write clean Ubuntu sources.list
+  copy:
+    dest: /etc/apt/sources.list
+    content: |
+      deb http://archive.ubuntu.com/ubuntu noble main restricted universe multiverse
+      deb http://archive.ubuntu.com/ubuntu noble-updates main restricted universe multiverse
+      deb http://archive.ubuntu.com/ubuntu noble-security main restricted universe multiverse
+
+- name: apt update
+  apt:
+    update_cache: yes
+
+# -----------------------------------------
+# 2. Disable swap / enable ip_forward
+# -----------------------------------------
+- name: Disable swap
+  shell: |
+    swapoff -a
+    sed -i '/swap/d' /etc/fstab
+
+- name: Enable ip_forward
+  sysctl:
+    name: net.ipv4.ip_forward
+    value: "1"
+    state: present
+    reload: yes
+
+# -----------------------------------------
+# 3. Install containerd
+# -----------------------------------------
+- name: Install containerd
+  apt:
+    name: containerd
+    state: present
+    update_cache: yes
+
+- name: Ensure containerd directory exists
+  file:
+    path: /etc/containerd
+    state: directory
+
+- name: Generate containerd default config
+  shell: containerd config default > /etc/containerd/config.toml
+
+- name: Enable SystemdCgroup
+  replace:
+    path: /etc/containerd/config.toml
+    regexp: 'SystemdCgroup = false'
+    replace: 'SystemdCgroup = true'
+
+# -----------------------------------------
+# 3.1 Configure registry mirrors
+# -----------------------------------------
+- name: Add registry mirrors to containerd
+  blockinfile:
+    path: /etc/containerd/config.toml
+    insertafter: '\[plugins."io.containerd.grpc.v1.cri".registry\]'
+    block: |
+      [plugins."io.containerd.grpc.v1.cri".registry.mirrors."docker.io"]
+        endpoint = ["https://registry.docker.kr"]
+
+      [plugins."io.containerd.grpc.v1.cri".registry.mirrors."quay.io"]
+        endpoint = ["https://quay-mirror.qingcloud.com"]
+
+      [plugins."io.containerd.grpc.v1.cri".registry.mirrors."gcr.io"]
+        endpoint = ["https://gcr-mirror.qingcloud.com"]
+
+      [plugins."io.containerd.grpc.v1.cri".registry.mirrors."registry.k8s.io"]
+        endpoint = ["https://k8s-mirror.qingcloud.com"]
+
+- name: Restart containerd
+  systemd:
+    name: containerd
+    state: restarted
+    enabled: yes
+
+# -----------------------------------------
+# 4. Install Kubernetes
+# -----------------------------------------
+- name: Add Kubernetes apt repo
+  copy:
+    dest: /etc/apt/sources.list.d/kubernetes.list
+    content: |
+      deb [trusted=yes] https://pkgs.k8s.io/core:/stable:/v1.30/deb/ /
+
+- name: apt update
+  apt:
+    update_cache: yes
+
+- name: Install Kubernetes tools
+  apt:
+    name:
+      - kubelet
+      - kubeadm
+      - kubectl
+    update_cache: yes
+    state: present
+    allow_unauthenticated: yes
+
+# -----------------------------------------
+# 5. Reset previous worker state
+# -----------------------------------------
+- name: kubeadm reset
+  shell: kubeadm reset -f
+  ignore_errors: true
+
+# -----------------------------------------
+# 6. Join cluster (THIS IS THE ONLY JOIN)
+# -----------------------------------------
+- import_tasks: join.yml

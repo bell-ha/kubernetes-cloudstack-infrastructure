@@ -1,0 +1,214 @@
+# roles/k8s_master/tasks/main.yml
+---
+# -----------------------------------------
+# 0. Fix hostname / DNS / APT mirrors
+# -----------------------------------------
+
+- name: Ensure hostname is resolvable
+  lineinfile:
+    path: /etc/hosts
+    line: "127.0.1.1   k8s-master"
+    state: present
+
+- name: Set hostname
+  hostname:
+    name: k8s-master
+
+- name: Configure systemd-resolved DNS
+  copy:
+    dest: /etc/systemd/resolved.conf
+    content: |
+      [Resolve]
+      DNS=8.8.8.8 1.1.1.1
+      FallbackDNS=8.8.4.4
+      DNSStubListener=no
+
+- name: Restart systemd-resolved
+  systemd:
+    name: systemd-resolved
+    state: restarted
+
+- name: Replace resolv.conf symlink
+  file:
+    path: /etc/resolv.conf
+    state: absent
+
+- name: Create resolv.conf with public DNS
+  copy:
+    dest: /etc/resolv.conf
+    content: |
+      nameserver 8.8.8.8
+      nameserver 1.1.1.1
+
+# -----------------------------------------
+# 1. Fix APT mirrors
+# -----------------------------------------
+- name: Remove local Ubuntu mirror
+  file:
+    path: /etc/apt/sources.list.d/ubuntu.sources
+    state: absent
+
+- name: Write clean Ubuntu sources.list
+  copy:
+    dest: /etc/apt/sources.list
+    content: |
+      deb http://archive.ubuntu.com/ubuntu noble main restricted universe multiverse
+      deb http://archive.ubuntu.com/ubuntu noble-updates main restricted universe multiverse
+      deb http://archive.ubuntu.com/ubuntu noble-security main restricted universe multiverse
+
+- name: Clean APT cache
+  shell: |
+    rm -rf /var/lib/apt/lists/*
+    apt clean
+
+- name: apt update
+  apt:
+    update_cache: yes
+
+# -----------------------------------------
+# 2. Install dependencies
+# -----------------------------------------
+- name: Install dependencies
+  apt:
+    name:
+      - ca-certificates
+      - curl
+      - apt-transport-https
+      - gnupg
+      - net-tools
+      - lsb-release
+    state: present
+    update_cache: yes
+
+# -----------------------------------------
+# 3. Disable swap / enable ip_forward
+# -----------------------------------------
+- name: Disable swap
+  shell: |
+    swapoff -a
+    sed -i '/swap/d' /etc/fstab
+
+- name: Enable ip_forward
+  sysctl:
+    name: net.ipv4.ip_forward
+    value: "1"
+    state: present
+    reload: yes
+
+# -----------------------------------------
+# 4. Install containerd
+# -----------------------------------------
+- name: Install containerd
+  apt:
+    name: containerd
+    state: present
+    update_cache: yes
+
+- name: Ensure containerd config directory exists
+  file:
+    path: /etc/containerd
+    state: directory
+
+- name: Generate containerd default config
+  shell: containerd config default > /etc/containerd/config.toml
+
+- name: Enable SystemdCgroup
+  replace:
+    path: /etc/containerd/config.toml
+    regexp: 'SystemdCgroup = false'
+    replace: 'SystemdCgroup = true'
+
+- name: Add registry mirrors to containerd
+  blockinfile:
+    path: /etc/containerd/config.toml
+    insertafter: '\[plugins."io.containerd.grpc.v1.cri".registry\]'
+    block: |
+      [plugins."io.containerd.grpc.v1.cri".registry.mirrors."docker.io"]
+        endpoint = ["https://registry.docker.kr"]
+
+      [plugins."io.containerd.grpc.v1.cri".registry.mirrors."quay.io"]
+        endpoint = ["https://quay-mirror.qingcloud.com"]
+
+      [plugins."io.containerd.grpc.v1.cri".registry.mirrors."gcr.io"]
+        endpoint = ["https://gcr-mirror.qingcloud.com"]
+
+      [plugins."io.containerd.grpc.v1.cri".registry.mirrors."registry.k8s.io"]
+        endpoint = ["https://k8s-mirror.qingcloud.com"]
+
+- name: Restart containerd
+  systemd:
+    name: containerd
+    state: restarted
+    enabled: yes
+
+# -----------------------------------------
+# 5. Install Kubernetes
+# -----------------------------------------
+- name: Add Kubernetes apt repo
+  copy:
+    dest: /etc/apt/sources.list.d/kubernetes.list
+    content: |
+      deb [trusted=yes] https://pkgs.k8s.io/core:/stable:/v1.30/deb/ /
+
+- name: apt update
+  apt:
+    update_cache: yes
+
+- name: Install kubeadm/kubelet/kubectl
+  apt:
+    name:
+      - kubelet
+      - kubeadm
+      - kubectl
+    state: present
+    allow_unauthenticated: yes
+
+# -----------------------------------------
+# 6. Reset old cluster
+# -----------------------------------------
+- name: kubeadm reset
+  shell: kubeadm reset -f
+  ignore_errors: true
+
+- name: Clean old K8s dirs
+  shell: rm -rf /etc/kubernetes/* /var/lib/kubelet/* /var/lib/etcd/*
+  ignore_errors: true
+
+# -----------------------------------------
+# 7. kubeadm init
+# -----------------------------------------
+- name: Initialize Kubernetes master
+  command: kubeadm init --pod-network-cidr=192.168.0.0/16 --ignore-preflight-errors=NumCPU
+  register: init_output
+  args:
+    creates: /etc/kubernetes/admin.conf
+
+# -----------------------------------------
+# 8. Wait for API server
+# -----------------------------------------
+- name: Wait for kube-apiserver
+  shell: |
+    until nc -z localhost 6443; do sleep 5; done
+  args:
+    executable: /bin/bash
+
+# -----------------------------------------
+# 9. Copy kubeconfig
+# -----------------------------------------
+- name: Set kubeconfig for ubuntu
+  shell: |
+    mkdir -p /home/ubuntu/.kube
+    cp /etc/kubernetes/admin.conf /home/ubuntu/.kube/config
+    chown ubuntu:ubuntu /home/ubuntu/.kube/config
+
+# -----------------------------------------
+# 10. Export join command (AUTO!)
+# -----------------------------------------
+- name: Get join command
+  shell: kubeadm token create --print-join-command
+  register: join_cmd
+
+- name: Expose join command to workers
+  add_host:
+    name: worker_join_info
+    join_cmd: "{{ join_cmd.stdout }}"

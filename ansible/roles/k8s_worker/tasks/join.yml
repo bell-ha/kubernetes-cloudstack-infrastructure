@@ -1,0 +1,7 @@
+# roles/k8s_worker/tasks/join.yml
+---
+- name: Join worker node to Kubernetes cluster (auto)
+  become: yes
+  command: "{{ hostvars['worker_join_info'].join_cmd }}"
+  args:
+    creates: /etc/kubernetes/kubelet.conf

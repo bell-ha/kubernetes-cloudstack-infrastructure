@@ -1,0 +1,24 @@
+- hosts: master
+  become: yes
+  roles:
+    - k8s_master
+
+- hosts: master
+  become: yes
+  roles:
+    - k8s_cni      # Master becomes Ready here
+
+- hosts: workers
+  become: yes
+  roles:
+    - k8s_worker   # Worker will join *after* master is Ready
+
+- hosts: master
+  become: yes
+  roles:
+    - k8s_metallb
+
+- hosts: master
+  become: yes
+  roles:
+    - k8s_apps

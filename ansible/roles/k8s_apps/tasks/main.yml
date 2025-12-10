@@ -1,0 +1,96 @@
+---
+
+# ============================================
+# 0) Local Path Provisioner 설치 (PVC Pending 해결)
+# ============================================
+- name: Install local-path-provisioner
+  command: kubectl apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/master/deploy/local-path-storage.yaml
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  become: yes
+
+- name: Wait for local-path-provisioner to be ready
+  shell: |
+    kubectl wait --for=condition=Ready pod -l app=local-path-provisioner -n local-path-storage --timeout=120s
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  become: yes
+
+# ============================================
+# 1) master에 /home/ubuntu/manifests 생성
+# ============================================
+- name: Ensure manifests directory exists on master
+  file:
+    path: /home/ubuntu/manifests/
+    state: directory
+    owner: ubuntu
+    group: ubuntu
+    mode: '0755'
+  become: yes
+
+# ============================================
+# 2) 로컬 → master로 manifests 전체 복사
+# ============================================
+- name: Copy manifests directory to master
+  synchronize:
+    src: "{{ playbook_dir }}/../manifests/"
+    dest: "/home/ubuntu/manifests/"
+    recursive: yes
+  delegate_to: localhost
+  run_once: true
+
+# ============================================
+# 3) GitLab PVC 적용
+# ============================================
+- name: Apply GitLab PVC
+  command: kubectl apply -f /home/ubuntu/manifests/gitlab/pvc.yaml
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  become: yes
+
+
+# ============================================
+# 5) GitLab Deployment 적용
+# ============================================
+- name: Apply GitLab Deployment
+  command: kubectl apply -f /home/ubuntu/manifests/gitlab/deployment.yaml
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  become: yes
+
+# ============================================
+# 6) GitLab Service 적용
+# ============================================
+- name: Apply GitLab Service
+  command: kubectl apply -f /home/ubuntu/manifests/gitlab/service.yaml
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  become: yes
+
+# ============================================
+# 7) GitLab Pod Ready 될 때까지 대기
+# ============================================
+- name: Wait for GitLab Pod to be ready
+  shell: |
+    kubectl wait --for=condition=Ready pod -l app=gitlab --timeout=600s
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  become: yes
+
+# ============================================
+# 8) Jenkins 적용
+# ============================================
+- name: Apply Jenkins manifests
+  command: kubectl apply -f /home/ubuntu/manifests/jenkins/
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  become: yes
+
+# ============================================
+# 9) Registry 적용
+# ============================================
+- name: Apply Registry manifests
+  command: kubectl apply -f /home/ubuntu/manifests/registry/
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  become: yes
