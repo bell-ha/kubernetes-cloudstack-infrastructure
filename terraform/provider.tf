@@ -12,7 +12,7 @@ terraform {
 }
 
 provider "cloudstack" {
-  api_url    = "https://dku.kloud.zone/client/api"
-  api_key    = "BDciNzMKijOYkjmCbW6kZBgmmF96eDZUfLZW8PrCljDL6q093ApSpaHsbs9ucFTQ5iPbjAjyaoJwog5_gY4Lkg"
-  secret_key = "qG1NHRsyI4iTqPyYr76o6xuFc7AJSf2_xONDDP4fS9DLpHvSWgxz1xuclpCSfzI0-XYIS0rYjWbOSEURpGFNHg"
+  api_url    = var.cloudstack_api_url
+  api_key    = var.cloudstack_api_key
+  secret_key = var.cloudstack_secret_key
 }

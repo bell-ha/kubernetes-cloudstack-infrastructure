@@ -1,3 +1,16 @@
+# CloudStack API 접속 정보 — 실제 값은 terraform.tfvars(gitignore)에서 주입
+variable "cloudstack_api_url" {
+  default = "https://dku.kloud.zone/client/api"
+}
+
+variable "cloudstack_api_key" {
+  sensitive = true
+}
+
+variable "cloudstack_secret_key" {
+  sensitive = true
+}
+
 # CloudStack zone
 variable "zone" {
   default = "DKU"

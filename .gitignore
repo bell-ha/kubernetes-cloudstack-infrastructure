@@ -1,0 +1,9 @@
+# Terraform — 시크릿/상태/캐시는 커밋 금지
+*.tfvars
+!*.tfvars.example
+*.tfstate
+*.tfstate.*
+.terraform/
+
+# macOS
+.DS_Store
