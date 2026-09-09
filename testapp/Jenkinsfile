@@ -1,0 +1,41 @@
+pipeline {
+    agent {
+        kubernetes {
+            inheritFrom "kaniko"
+        }
+    }
+
+    stages {
+        stage('Clone') {
+            steps {
+                git branch: 'main', url: 'http://192.168.50.131:30080/root/test32203482.git'
+            }
+        }
+
+        stage('Build Image with Kaniko') {
+            steps {
+                container('kaniko') {
+                    sh '''
+                        /kaniko/executor \
+                          --context `pwd` \
+                          --dockerfile `pwd`/Dockerfile \
+                          --destination=192.168.50.131:30500/testapp:latest \
+                          --insecure \
+                          --skip-tls-verify
+                    '''
+                }
+            }
+        }
+
+        stage('Deploy to K8s') {
+            steps {
+                container('kubectl') {
+                    sh '''
+                        kubectl apply -f k8s/deployment.yaml
+                        kubectl apply -f k8s/service.yaml
+                    '''
+                }
+            }
+        }
+    }
+}

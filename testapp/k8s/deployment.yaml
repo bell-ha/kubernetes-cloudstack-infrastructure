@@ -1,0 +1,22 @@
+# ~/testapp/k8s/deployment.yaml
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: testapp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: testapp
+  template:
+    metadata:
+      labels:
+        app: testapp
+    spec:
+      containers:
+      - name: testapp
+        image: 192.168.50.131:30500/testapp:latest
+        ports:
+        - containerPort: 8080
+        imagePullPolicy: Always

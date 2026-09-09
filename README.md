@@ -133,7 +133,7 @@ CloudStack에서 자동화된 인프라 프로비저닝:
 ```python
 # 포드 호스트명을 반환하는 간단한 웹 앱
 - 경로: GET /
-- 응답: "Hello! My name is LEE JONG HA!! {pod_hostname}"
+- 응답: "Hello! My name Is LEE JONG HA!! {pod_hostname}"
 - 포트: 8080
 ```
 
