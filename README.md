@@ -1,380 +1,218 @@
-# 클라우드 네이티브 Kubernetes 클러스터 인프라
+# Kubernetes 클러스터 인프라 구축
 
-CloudStack에 프로덕션급 Kubernetes 클러스터를 구현하고 자동화된 CI/CD 파이프라인을 통합한 포괄적인 Infrastructure as Code (IaC) 프로젝트입니다.
+공인 IP 하나, 로드밸런서 없는 사설 클라우드에 세운 3노드 클러스터
 
-**작성자:** 이종하 | **프로젝트:** 인프라 설계 및 구현
+포트폴리오: https://bell-ha.github.io/projects/k8s-infra/
 
----
-
-## 📋 프로젝트 개요
-
-이 프로젝트는 엔드-투-엔드 클라우드 인프라 설계 및 배포를 다음과 같은 특징으로 시연합니다:
-
-- **Infrastructure as Code (IaC)**: Terraform을 사용하여 CloudStack의 컴퓨팅 리소스 프로비저닝
-- **구성 관리**: Ansible을 사용하여 다중 노드 Kubernetes 클러스터 설정 조율
-- **컨테이너 오케스트레이션**: Ubuntu 24.04에서 실행되는 Kubernetes (v1.30)
-- **DevOps 파이프라인**: GitLab, Jenkins 및 비공개 Docker Registry
-- **로드 밸런싱**: MetalLB를 사용하여 클러스터 외부에 서비스 노출
-
-### 아키텍처 하이라이트
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      CloudStack (DKU)                       │
-│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐   │
-│  │   마스터     │    │    GitLab    │    │   워커       │   │
-│  │  (2 코어)    │    │  (4 코어)    │    │  (1 코어)    │   │
-│  │ k8s-master   │    │ k8s-gitlab   │    │ k8s-worker   │   │
-│  └──────────────┘    └──────────────┘    └──────────────┘   │
-│      네트워크: 192.168.50.0/24                               │
-│      CNI: Calico, 로드 밸런서: MetalLB                      │
-└─────────────────────────────────────────────────────────────┘
-│
-└─ 공개 IP 및 포트 포워딩
-   ├─ SSH 마스터:   22    → Master:22
-   ├─ SSH GitLab:   2201  → GitLab:22
-   ├─ SSH 워커:     2202  → Worker:22
-   ├─ Jenkins UI:   30880 (NodePort)
-   ├─ GitLab UI:    30080 (NodePort)
-   ├─ Registry:     30500 (비공개 Docker Registry)
-   └─ TestApp:      30001 (테스트 애플리케이션)
-```
+**작성자:** 이종하 | **기간:** 2025.09 ~ 2025.12
 
 ---
 
-## 🏗️ 인프라 컴포넌트
+## 개요
 
-### 1. **Terraform 구성** (`terraform/`)
+사설 CloudStack(DKU 존) 위에 Terraform으로 VM 3대를 만들고, Ansible로 Kubernetes v1.30 클러스터를 세운 뒤 GitLab, Jenkins, 사설 Docker Registry를 올렸습니다. GitLab에 올린 테스트 앱을 Jenkins가 Kaniko로 빌드해 레지스트리에 넣고 클러스터에 배포합니다.
 
-CloudStack에서 자동화된 인프라 프로비저닝:
+퍼블릭 클라우드가 아니라서 `type: LoadBalancer` 서비스에 로드밸런서를 붙여 주는 장치가 없고, 공인 IP도 하나만 받습니다. 이 두 가지가 설계 제약의 대부분이었습니다.
 
-| 리소스 | 구성 | 목적 |
-|----------|---------------|---------|
-| **네트워크** | 192.168.50.0/24 | 클러스터용 격리 네트워크 |
-| **인스턴스** | 3개 VM | 마스터 (2코어), GitLab (4코어), 워커 (1코어) |
-| **공개 IP** | 1개 탄력형 IP | 외부 접근 지점 |
-| **포트 포워딩** | TCP 규칙 | SSH 및 서비스 접근 |
-| **방화벽 규칙** | 송신 모두 허용 | 클러스터 외부 연결성 |
+- **프로비저닝**: Terraform (CloudStack provider 0.5)
+- **구성 관리**: Ansible 롤 5개
+- **클러스터**: kubeadm, Kubernetes v1.30, Ubuntu 24.04, containerd, Calico
+- **CI/CD**: GitLab, Jenkins(Kaniko), 사설 Docker Registry
+- **외부 노출**: 공인 IP 하나에 포트포워딩을 걸어 NodePort로 전달
 
-**주요 기능:**
-- 매개변수화된 구성 (CPU 제공, 템플릿)
-- 대기 조건을 사용한 의존성 관리
-- 공개 IP 프로비저닝 및 자동 포트 포워딩
-- 초기 VM 설정을 위한 Cloud-init 사용자 데이터
+### 구성
 
-### 2. **Ansible 자동화** (`ansible/`)
-
-다단계 클러스터 초기화 및 애플리케이션 배포:
-
-#### **단계 1: k8s_master**
-- DNS/호스트명 구성 (8.8.8.8, 1.1.1.1)
-- APT 저장소 설정 (Ubuntu 24.04 Noble)
-- 컨테이너 런타임: `containerd` with SystemdCgroup
-- 공식 저장소를 통한 Kubernetes v1.30 설치
-- 포드 네트워크 CIDR: 192.168.0.0/16
-- 자동 조인 명령 생성을 통한 `kubeadm init`
-- ubuntu 사용자용 kubeconfig 설정
-
-#### **단계 2: k8s_cni**
-- Calico CNI 배포 (v3.27.3)
-- 네트워크 정책 적용
-- 포드 간 통신 라우팅
-
-#### **단계 3: k8s_worker**
-- 동일한 컨테이너 런타임 및 K8s 도구 설치
-- 레지스트리 미러 구성 (Docker.io, Quay.io, GCR, K8s)
-- 워커 노드가 자동으로 클러스터 조인
-
-#### **단계 4: k8s_metallb**
-- 서비스 노출을 위한 MetalLB 로드 밸런서
-- Layer 2 모드 구성
-- NodePort 서비스용 IP 풀
-
-#### **단계 5: k8s_apps**
-- **Local Path Provisioner**: 영구 볼륨 지원
-- **GitLab 배포**: 버전 제어 및 아티팩트 저장소
-- **Jenkins 배포**: CI/CD 파이프라인 오케스트레이션
-- **Docker Registry**: 비공개 컨테이너 이미지 레지스트리
-
-**오케스트레이션 흐름:**
 ```
-마스터 준비 → CNI 활성화 → 워커 조인 → MetalLB 준비 → 앱 배포
+CloudStack (DKU 존), 격리 네트워크 192.168.50.0/24, CNI Calico
+
+  [k8s-master]          [k8s-gitlab]          [k8s-worker]
+  control plane         worker1               worker2
+  2 cores               4 cores               1 core
+
+        ▲
+        │ 공인 IP 하나, 포트포워딩
+        │
+   SSH      22    → k8s-master:22
+   SSH      2201  → k8s-gitlab:22
+   SSH      2202  → k8s-worker:22
+   GitLab   30080 → k8s-gitlab:30080  (NodePort)
+   Jenkins  32080 → k8s-master:32080  (NodePort)
+   Registry 30500 → k8s-gitlab:30500  (NodePort)
 ```
+
+`k8s-gitlab` VM은 이름과 달리 GitLab 전용 서버가 아니라 클러스터에 조인하는 워커입니다. 인벤토리에서는 `worker1`(포트 2201)이고, `k8s-worker`가 `worker2`(포트 2202)입니다. GitLab 파드가 어느 노드에 뜰지는 스케줄러가 정합니다.
+
+### 한계
+
+- 마스터가 1대라 마스터가 멈추면 클러스터도 멈춥니다.
+- MetalLB를 설치해 IP 풀과 L2Advertisement까지 구성했지만, 외부 접근에는 쓰지 않습니다. 실제 외부 접근은 공인 IP의 포트포워딩에서 NodePort로 내려가는 경로뿐입니다.
+- 테스트 앱의 NodePort 30001은 포트포워딩 규칙이 없어 클러스터 네트워크 안에서만 접근됩니다.
 
 ---
 
-## 🐳 컨테이너 및 Kubernetes 컴포넌트
+## 설계에서 정한 것
 
-### **Docker Registry** (`manifests/registry/`)
-- **이미지**: 공식 Docker Registry
-- **스토리지**: PersistentVolumeClaim (50Gi)
-- **포트**: 30500 (NodePort)
-- **접근**: `192.168.50.131:30500/testapp:latest`
+### 공인 IP 하나, 포트 규약을 먼저 정함
 
-### **GitLab** (`manifests/gitlab/`)
-- **이미지**: `gitlab/gitlab-ce:latest`
-- **스토리지**: PersistentVolumeClaim (100Gi)
-- **인증정보**: 
-  - 루트 비밀번호: `SuperStrongPass!2025`
-  - 루트 이메일: `root@example.com`
-- **포트**: 30080 (HTTP), 22 (SSH)
-- **저장소**: 테스트 애플리케이션 소스 코드 호스팅
+공인 IP가 하나라 포트 규약을 먼저 정했습니다. SSH는 22, 2201, 2202로 노드를 나누고, 서비스는 매니페스트에서 NodePort 번호를 고정한 뒤 그 번호를 그대로 외부 포트로 통과시켰습니다. 서비스가 늘 때마다 포트가 충돌하지 않게 하려는 것입니다. 포트포워딩과 방화벽 규칙은 모두 `terraform/main.tf`에 있습니다.
 
-### **Jenkins** (`manifests/jenkins/`)
-- **이미지**: `jenkins/jenkins:lts`
-- **스토리지**: PersistentVolumeClaim (50Gi)
-- **포트**: 30880 (HTTP)
-- **실행자**: Kaniko 빌더를 사용한 Kubernetes 플러그인
-- **파이프라인**: 자동화된 빌드, 테스트 및 배포
+### 플레이 순서로 경계를 둠
 
-### **테스트 애플리케이션** (`testapp/`)
+`ansible/site.yml`은 롤마다 플레이를 나눠 마스터 준비, Calico, 워커 조인, MetalLB, 앱 배포 순으로 실행합니다. 워커는 마스터와 CNI가 준비된 뒤에야 조인할 수 있기 때문입니다.
 
-**Flask 애플리케이션:**
-```python
-# 포드 호스트명을 반환하는 간단한 웹 앱
-- 경로: GET /
-- 응답: "Hello! My name Is LEE JONG HA!! {pod_hostname}"
-- 포트: 8080
-```
+### 조인 토큰은 파일 대신 메모리로
 
-**Docker 이미지:**
-- 기본 이미지: `python:3.10-slim`
-- 의존성: Flask
-- 레지스트리: `192.168.50.131:30500`의 비공개 레지스트리
+마스터 롤이 `kubeadm token create --print-join-command`의 결과를 `add_host`로 가상 호스트 `worker_join_info`에 담고, 워커 롤이 `hostvars['worker_join_info'].join_cmd`로 꺼내 실행합니다. 조인 명령을 파일로 남기거나 복사하지 않습니다.
 
-**Kubernetes 배포:**
-- 복제본: 1개
-- 서비스 유형: NodePort (30001)
-- 이미지 풀 정책: Always
-- 레지스트리: 인증정보가 있는 비공개 레지스트리
+### 재실행
+
+`kubeadm init`에는 `creates: /etc/kubernetes/admin.conf`, 워커 조인에는 `creates: /etc/kubernetes/kubelet.conf` 조건을 걸어 두었습니다. 다만 두 롤 모두 그 앞에서 `kubeadm reset -f`를 실행하므로, 지금 코드로 플레이북을 다시 돌리면 클러스터를 새로 초기화하고 다시 조인합니다.
 
 ---
 
-## 🔄 CI/CD 파이프라인
+## Terraform (`terraform/`)
 
-### **Jenkins 파이프라인** (`testapp/Jenkinsfile`)
+| 리소스 | 내용 |
+|---|---|
+| 네트워크 | 격리 네트워크 192.168.50.0/24 (Source NAT) |
+| 인스턴스 | `k8s-master` Medium(2코어), `k8s-gitlab` Large(4코어), `k8s-worker` Small(1코어), 템플릿 `Ubuntu_24.04_VSCode` |
+| 공인 IP | 1개 |
+| 포트포워딩과 방화벽 | 위 구성도의 TCP 6개 포트 |
+| 송신 방화벽 | 전체 허용 |
+| 인벤토리 | `hosts.ini.tmpl`에 공인 IP를 넣어 `ansible/inventory/hosts.ini` 생성 (`local_file`) |
 
-```groovy
-파이프라인 단계:
-  1. Clone         → GitLab에서 가져오기 (http://192.168.50.131:30080)
-  2. Build Image   → Kaniko 실행자 (멀티플랫폼 빌드)
-  3. Push Registry → 비공개 레지스트리 (30500)
-  4. Deploy K8s    → 클러스터에 매니페스트 적용
-```
+공인 IP가 준비될 때까지 `time_sleep`으로 60초 기다린 뒤 포트포워딩을 만듭니다. VM은 cloud-init으로 비밀번호 로그인을 켭니다. CloudStack API 키는 `terraform.tfvars`(git 제외)에서 넣습니다.
 
-**기능:**
-- 컨테이너화된 Kaniko 빌더 (Docker 데몬 불필요)
-- 안전하지 않은 레지스트리 지원
-- Kubernetes에 자동 배포
-- 내부 레지스트리용 TLS 검증 건너뛰기
+## Ansible (`ansible/`)
+
+| 순서 | 롤 | 대상 | 내용 |
+|---|---|---|---|
+| 1 | `k8s_master` | master | 호스트명과 DNS(8.8.8.8, 1.1.1.1), APT 소스, swap 끄기, containerd(SystemdCgroup, 레지스트리 미러), kubeadm/kubelet/kubectl v1.30, `kubeadm init --pod-network-cidr=192.168.0.0/16`, kubeconfig, 조인 명령 생성 |
+| 2 | `k8s_cni` | master | Calico v3.27.3 매니페스트 적용 |
+| 3 | `k8s_worker` | workers | APT 소스, swap 끄기, containerd(레지스트리 미러), Kubernetes 도구 설치, 클러스터 조인 |
+| 4 | `k8s_metallb` | master | MetalLB v0.14.5 설치, IP 풀 192.168.50.100~200, L2Advertisement |
+| 5 | `k8s_apps` | master | local-path-provisioner 설치, `manifests/` 복사 후 GitLab, Jenkins, Registry 적용 |
+
+## 클러스터에 올린 서비스 (`manifests/`)
+
+| 서비스 | 이미지 | PVC | 서비스 포트 → NodePort |
+|---|---|---|---|
+| GitLab | `gitlab/gitlab-ce:latest` | 10Gi | 80 → 30080 |
+| Jenkins | `jenkins/jenkins:lts` | 5Gi | 8080 → 32080 |
+| Registry | `registry:2` | 3Gi | 5000 → 30500 |
+
+PVC는 모두 `local-path` 스토리지 클래스를 씁니다. GitLab 초기 root 비밀번호는 배포 시 설정합니다.
+
+## 테스트 앱과 파이프라인 (`testapp/`)
+
+- **앱**: Flask, `GET /`에 파드 호스트명을 붙여 응답, 포트 8080
+- **이미지**: `python:3.10-slim` 기반, `192.168.50.131:30500/testapp:latest`로 푸시
+- **배포**: Deployment 1개(`imagePullPolicy: Always`), NodePort 30001 (외부 포워딩 없음)
+
+`testapp/Jenkinsfile`의 단계는 세 개입니다.
+
+1. **Clone**: 클러스터 안의 GitLab(`http://192.168.50.131:30080`)에서 `main` 브랜치를 받음
+2. **Build Image with Kaniko**: Docker 데몬 없이 Kaniko로 빌드해 레지스트리에 푸시 (`--insecure`, `--skip-tls-verify`)
+3. **Deploy to K8s**: `kubectl apply`로 `k8s/deployment.yaml`, `k8s/service.yaml` 적용
+
+에이전트는 Jenkins에 등록해 둔 `kaniko` 파드 템플릿을 상속합니다. 이 템플릿 설정은 저장소에 없습니다.
 
 ---
 
-## 📊 네트워크 아키텍처
+## 실행 방법
 
-### **포트 매핑**
+### 준비물
 
-| 서비스 | 내부 포트 | 외부 포트 | 프로토콜 | 노드 |
-|--------|--------------|---------------|----------|------|
-| SSH 마스터 | 22 | 22 | TCP | Master |
-| SSH GitLab | 22 | 2201 | TCP | GitLab |
-| SSH 워커 | 22 | 2202 | TCP | Worker |
-| Jenkins UI | 8080 | 30880 | TCP | Cluster |
-| GitLab UI | 80 | 30080 | TCP | Cluster |
-| Registry | 5000 | 30500 | TCP | Cluster |
-| TestApp | 8080 | 30001 | TCP | Cluster |
+- Terraform 1.0 이상
+- Ansible, 그리고 비밀번호 SSH 접속용 `sshpass`와 매니페스트 복사용 `rsync`
+- CloudStack API 키와 시크릿 키
 
-### **DNS 및 해석**
-- 내부: 클러스터 DNS (CoreDNS)
-- 외부: Google DNS (8.8.8.8), Cloudflare (1.1.1.1)
-- `/etc/hosts`를 통한 호스트명 해석
-
----
-
-## 🚀 배포 지침
-
-### **필수 요구사항**
-- Terraform CLI (>= 1.0)
-- Ansible (>= 2.9)
-- CloudStack 인증정보 (API 키, 비밀키)
-- 원격 접근용 SSH 키
-
-### **단계 1: 인프라 프로비저닝**
+### 1. 인프라 생성
 
 ```bash
 cd terraform/
+cp terraform.tfvars.example terraform.tfvars   # API 키 입력
 terraform init
-terraform plan
 terraform apply
 ```
 
-**출력:**
-```
-public_ip  = "x.x.x.x"
-master_ip  = "192.168.50.xxx"
-gitlab_ip  = "192.168.50.xxx"
-worker_ip  = "192.168.50.xxx"
-jenkins_url = "http://x.x.x.x:30880"
-gitlab_url  = "http://x.x.x.x:30080"
-```
+출력은 `public_ip`, `master_ip`, `gitlab_ip`, `worker_ip`, `jenkins_url`, `gitlab_url`입니다. `outputs.tf`의 `jenkins_url`은 포트가 30880으로 남아 있지만, 실제 Jenkins NodePort와 포워딩 포트는 32080입니다.
 
-### **단계 2: Ansible 인벤토리 업데이트**
+`terraform apply`가 `ansible/inventory/hosts.ini`를 공인 IP로 채워 만듭니다. 접속 비밀번호 변수는 템플릿에 없으므로 배포 환경에서 따로 지정합니다.
+
+### 2. 클러스터 구성
 
 ```bash
 cd ../ansible/
-# inventory/hosts.ini.tmpl을 Terraform 출력으로 편집
-mv inventory/hosts.ini.tmpl inventory/hosts.ini
-# ${public_ip}을 실제 공개 IP로 교체
+ansible all -m ping
+ansible-playbook site.yml
 ```
 
-### **단계 3: 클러스터 구성**
+### 3. 확인
 
 ```bash
-# 연결 테스트
-ansible -i inventory/hosts.ini all -m ping
-
-# 전체 플레이북 실행
-ansible-playbook -i inventory/hosts.ini site.yml -v
+ssh ubuntu@<공인 IP>        # 마스터 (22)
+kubectl get nodes -o wide   # 노드 3대
+kubectl get pods -A
+kubectl get svc
 ```
 
-### **단계 4: 클러스터 검증**
-
-```bash
-# 마스터에 SSH 접속
-ssh -i ~/.ssh/your-key ubuntu@${PUBLIC_IP}
-
-# 클러스터 상태 확인
-kubectl get nodes -o wide
-kubectl get pods --all-namespaces
-kubectl get services --all-namespaces
-```
+브라우저에서는 `http://<공인 IP>:30080`(GitLab), `http://<공인 IP>:32080`(Jenkins)로 접속합니다.
 
 ---
 
-## 📈 주요 기술 및 시연 기술
+## 보안 메모
 
-### **인프라 및 IaC**
-- ✅ Terraform: 다중 리소스 오케스트레이션, 상태 관리
-- ✅ CloudStack: 공용 클라우드 프로비저닝, 네트워킹
-- ✅ 네트워킹: 포트 포워딩, 방화벽 규칙, 격리 네트워크
+해 둔 것
 
-### **구성 관리**
-- ✅ Ansible: 다단계 플레이북, 역할, 핸들러
-- ✅ 시스템 관리: DNS, APT 저장소, Linux 네트워킹
-- ✅ 컨테이너 런타임: Containerd 구성, 레지스트리 미러
+- 클러스터를 격리 네트워크(192.168.50.0/24)에 두고 공인 IP에는 필요한 포트만 포워딩
+- containerd SystemdCgroup 설정
 
-### **Kubernetes 및 오케스트레이션**
-- ✅ kubeadm: 클러스터 부트스트랩 및 노드 조인
-- ✅ CNI: Calico 네트워크 정책 구현
-- ✅ 로드 밸런싱: MetalLB 서비스 노출
-- ✅ 스토리지: 영구 볼륨 및 로컬 경로 프로비저닝
-- ✅ 매니페스트: 배포, 서비스, PersistentVolumeClaim
+남은 것
 
-### **DevOps 및 CI/CD**
-- ✅ Jenkins: 파이프라인-코드, Kubernetes 포드 실행
-- ✅ GitLab: 저장소 호스팅, 아티팩트 저장소
-- ✅ Docker: 이미지 빌드 (Kaniko), 레지스트리 관리
-- ✅ 컨테이너 보안: 비공개 레지스트리, 안전하지 않은 모드 처리
-
-### **Python 및 애플리케이션 개발**
-- ✅ Flask: 경량 웹 프레임워크
-- ✅ Docker: 슬림 기본 이미지로 컨테이너화
-- ✅ 배포: Kubernetes 네이티브 애플리케이션 배포
+- [ ] VM 비밀번호 로그인 대신 SSH 키 사용
+- [ ] 레지스트리(30500)가 공인 IP로 열려 있으므로 인증 또는 접근 제한 추가
+- [ ] 서비스 간 TLS 적용 (레지스트리는 지금 `--insecure`로 사용)
+- [ ] 비밀값을 매니페스트 평문 대신 Secret 또는 외부 비밀 저장소로 관리
+- [ ] RBAC 정리
+- [ ] Calico 네트워크 정책 작성 (지금은 CNI만 설치하고 정책은 없음)
+- [ ] 로깅과 모니터링 (Prometheus 등)
+- [ ] 컨트롤 플레인 이중화
 
 ---
 
-## 🔐 보안 고려사항
-
-### **구현됨**
-- ✅ 클러스터용 격리 네트워크 (192.168.50.0/24)
-- ✅ 포트 포워딩: SSH 선택적으로 노출
-- ✅ 비공개 Docker 레지스트리: 공개 접근 불가
-- ✅ SystemdCgroup: 향상된 컨테이너 리소스 격리
-
-### **프로덕션용 권장사항**
-- [ ] 서비스 통신용 TLS 활성화
-- [ ] RBAC (Role-Based Access Control) 구현
-- [ ] 관리형 비밀 사용 (Sealed Secrets, Vault)
-- [ ] 네트워크 정책 활성화 (Calico)
-- [ ] Pod 보안 정책 구현
-- [ ] 비공개 SSH 키 사용 (비밀번호 인증 회피)
-- [ ] 로깅 및 모니터링 활성화 (Prometheus, ELK)
-
----
-
-## 📁 프로젝트 구조
+## 디렉터리 구조
 
 ```
 .
-├── terraform/              # 인프라 프로비저닝
-│   ├── main.tf            # 리소스 정의
-│   ├── variables.tf       # 매개변수화된 입력
-│   ├── outputs.tf         # 리소스 정보 내보내기
-│   └── provider.tf        # CloudStack 공급자 구성
-│
-├── ansible/               # 클러스터 구성
-│   ├── playbook.yaml      # 주 플레이북 엔트리
-│   ├── site.yml           # 전체 클러스터 플레이북
-│   ├── ansible.cfg        # Ansible 구성
-│   ├── inventory/         # 호스트 인벤토리
-│   │   ├── hosts.ini      # 호스트 정의
-│   │   └── hosts.ini.tmpl # 변수가 있는 템플릿
+├── terraform/
+│   ├── main.tf                 # 네트워크, VM, 공인 IP, 포트포워딩, 방화벽, 인벤토리 생성
+│   ├── variables.tf            # 존, 템플릿, VM 사양, API 접속 정보
+│   ├── outputs.tf
+│   ├── provider.tf
+│   └── terraform.tfvars.example
+├── ansible/
+│   ├── site.yml                # 롤 순서
+│   ├── playbook.yaml           # site.yml import
+│   ├── ansible.cfg
+│   ├── inventory/
+│   │   ├── hosts.ini.tmpl      # Terraform이 채우는 템플릿
+│   │   └── hosts.ini
 │   └── roles/
-│       ├── k8s_master/    # 마스터 노드 설정
-│       ├── k8s_cni/       # CNI 배포
-│       ├── k8s_worker/    # 워커 노드 설정
-│       └── k8s_metallb/   # 로드 밸런서
-│
-├── manifests/             # Kubernetes 매니페스트
-│   ├── gitlab/           # GitLab 배포
-│   ├── jenkins/          # Jenkins 배포
-│   └── registry/         # Docker 레지스트리
-│
-├── testapp/              # 샘플 애플리케이션
-│   ├── src/
-│   │   └── app.py       # Flask 애플리케이션
-│   ├── Dockerfile       # 컨테이너 이미지
-│   ├── Jenkinsfile      # CI/CD 파이프라인
-│   └── k8s/
-│       ├── deployment.yaml
-│       └── service.yaml
-│
-└── README.md            # 이 파일
+│       ├── k8s_master/
+│       ├── k8s_cni/
+│       ├── k8s_worker/
+│       ├── k8s_metallb/
+│       └── k8s_apps/
+├── manifests/
+│   ├── gitlab/
+│   ├── jenkins/
+│   └── registry/
+└── testapp/
+    ├── src/app.py
+    ├── Dockerfile
+    ├── Jenkinsfile
+    └── k8s/
+        ├── deployment.yaml
+        └── service.yaml
 ```
-
----
-
-## 🎯 학습 성과 및 성취
-
-이 프로젝트는 다음을 시연합니다:
-
-1. **엔드-투-엔드 인프라 설계**: VM 프로비저닝에서 애플리케이션 배포까지
-2. **Infrastructure as Code**: 재현 가능하고 버전 관리되는 인프라
-3. **자동화 및 오케스트레이션**: 수동 작업 및 인적 오류 감소
-4. **클라우드 네이티브 아키텍처**: Kubernetes 우선 설계 및 확장성
-5. **DevOps 베스트 프랙티스**: CI/CD 통합, 컨테이너화, 인프라 자동화
-6. **문제 해결 기술**: 네트워크 디버깅, Kubernetes 포드 관리, Ansible 플레이
-
----
-
-## 📝 라이선스 및 저작권
-
-이 프로젝트는 인프라 설계 및 구현 학과의 학술 과정의 일부로 작성되었습니다.
-
-**연락처:** 이종하
-
----
-
-## 🤝 기여 및 지원
-
-이 인프라에 대한 질문이나 개선사항:
-
-1. Kubernetes 문서 검토: https://kubernetes.io/docs/
-2. Ansible 베스트 프랙티스 확인: https://docs.ansible.com/
-3. Terraform CloudStack 공급자 참조: https://registry.terraform.io/providers/cloudstack/cloudstack/latest
-4. GitLab 문서: https://docs.gitlab.com/
-5. Jenkins 문서: https://www.jenkins.io/doc/
-
----
-
-**마지막 업데이트:** 2025-12-10 | **버전:** 1.0
